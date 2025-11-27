@@ -11,7 +11,7 @@ local ffprobe = "ffprobe"
 local codec_options = {
     {id = "copy", label = "copy"},
     {id = "libx264", label = "libx264"},
-    {id = "hevc_nvenc", label = "hevc_nvenc (cq18)"},
+    {id = "h264_nvenc", label = "h264_nvenc (cq18)"},
     {id = "videotoolbox", label = "videotoolbox (profile high)"},
 }
 
@@ -30,13 +30,14 @@ local function osd()
     -- 五行提示：编码 / 开始 / 结束 / 导出 / 退出
     local lines = {}
     table.insert(lines, string.format("编码: %s", codec))
-    table.insert(lines, string.format("开始: %s (按 1 设置)", s))
-    table.insert(lines, string.format("结束: %s (按 2 设置)", e))
-    table.insert(lines, "按 e 导出（仅在本模式生效）")
+    table.insert(lines, string.format("开始: %s (按 Ctrl+1 设置)", s))
+    table.insert(lines, string.format("结束: %s (按 Ctrl+2 设置)", e))
+    table.insert(lines, "按 Ctrl+E 导出（仅在本模式生效）")
     table.insert(lines, "再次按 Shift+C 退出（恢复默认快捷键）")
     local msg = table.concat(lines, "\n")
     -- convert to ASS (\N for newline) and place at top-left (alignment 7)
-    local ass = string.format('{\\an7}{\\fs22}%s', msg:gsub('\n','\\N'))
+    local msg = "\\N\\N\\N" .. table.concat(lines, "\n")
+    local ass = string.format('{\\an7}{\\fs10}%s', msg:gsub('\n','\\N'))
     mp.set_osd_ass(0, 0, ass)
 end
 
@@ -49,13 +50,15 @@ end
 
 local function toggle_mode()
     state.active = not state.active
+
     if not state.active then
-        -- stop periodic OSD refresher and show exit notice briefly
         stop_osd_timer()
+        mp.set_osd_ass(0, 0, "")   -- ⭐立刻清除 OSD
         mp.osd_message("ffmpeg-clip: 已退出（按 Shift+C 进入）", 3)
     else
-        state.start = nil; state.stop = nil; state.codec_index = 1
-        -- start a periodic timer to refresh OSD so it remains visible
+        state.start = nil
+        state.stop = nil
+        state.codec_index = 1
         if not osd_timer then
             osd_timer = mp.add_periodic_timer(1.0, function()
                 if state.active then
@@ -68,6 +71,7 @@ local function toggle_mode()
         osd()
     end
 end
+
 
 local function set_start()
     if not state.active then return end
@@ -135,8 +139,8 @@ local function build_ffmpeg_args(input, outpath, start, stop, codec_id)
         end
     elseif codec_id == "libx264" then
         table.insert(args, "-c:v"); table.insert(args, "libx264")
-    elseif codec_id == "hevc_nvenc" then
-        table.insert(args, "-c:v"); table.insert(args, "hevc_nvenc")
+    elseif codec_id == "h264_nvenc" then
+        table.insert(args, "-c:v"); table.insert(args, "h264_nvenc")
         table.insert(args, "-cq"); table.insert(args, "18")
     elseif codec_id == "videotoolbox" then
         table.insert(args, "-c:v"); table.insert(args, "h264_videotoolbox")
@@ -199,7 +203,7 @@ end
 
 local function export_clip()
     if not state.active then return end
-    if not state.start or not state.stop then mp.osd_message("ffmpeg-clip: 请先按1/2设置开始和结束时间"); return end
+    if not state.start or not state.stop then mp.osd_message("ffmpeg-clip: 请先按 Ctrl+1 / Ctrl+2 设置开始和结束时间"); return end
     local path = mp.get_property("path")
     if not path then mp.osd_message("ffmpeg-clip: 无法获取当前播放路径"); return end
     local dir, filename = utils.split_path(path)
@@ -239,30 +243,46 @@ local function export_clip()
             mp.msg.error("ffmpeg-clip: failed to start subprocess:", utils.to_string(result))
             return
         end
-        if result and result.exit_status == 0 then
+
+        -- Some mpv/os variants return 'exit_status', others return 'status'.
+        -- Treat either 0 as success.
+        local exit_code = nil
+        if result then exit_code = result.exit_status or result.status or result.code end
+
+        if exit_code == 0 then
             mp.osd_message("ffmpeg-clip: 导出完成 -> " .. outpath, 5)
             mp.msg.info("ffmpeg-clip: export finished successfully: " .. outpath)
         else
             mp.osd_message("ffmpeg-clip: 导出失败 (查看终端输出)", 8)
             mp.msg.error("ffmpeg-clip: ffmpeg exit:", utils.to_string(result))
-            -- write debug info to /tmp for easier inspection
-            local logpath = "/tmp/ffmpeg_clip_last.log"
-            local ok, err = utils.subprocess({ args = {"/bin/sh", "-c",
-                "echo 'FFMPEG ARGS: ' > \""..logpath.."\" && printf '%s\\n' \""..utils.to_string(args):gsub('"','\\"').."\" >> \""..logpath.."\" && echo 'RESULT:' >> \""..logpath.."\" && printf '%s\\n' \""..utils.to_string(result):gsub('"','\\"').."\" >> \""..logpath.."\"" }, cancellable = false })
-            if not ok then mp.msg.warn("ffmpeg-clip: failed to write debug log: " .. tostring(err)) end
+
+            -- write debug info to a cross-platform temp path for easier inspection
+            local tmp = os.getenv("TMP") or os.getenv("TEMP") or "/tmp"
+            local logpath = tmp .. "/ffmpeg_clip_last.log"
+            local ok, ferr = pcall(function()
+                local f = io.open(logpath, "w")
+                if not f then error("cannot open " .. tostring(logpath)) end
+                f:write("FFMPEG ARGS:\n")
+                f:write(utils.to_string(args) .. "\n\n")
+                f:write("RESULT:\n")
+                f:write(utils.to_string(result) .. "\n")
+                f:close()
+            end)
+            if not ok then mp.msg.warn("ffmpeg-clip: failed to write debug log: " .. tostring(ferr)) end
             mp.msg.warn("ffmpeg-clip: wrote debug to " .. logpath)
         end
     end)
 end
 
+-- key bindings: Shift+C to toggle the mode (tips off by default)
 mp.add_key_binding("C", "ffmpeg_clip_toggle", toggle_mode)
-mp.add_key_binding("1", "ffmpeg_clip_set_start", set_start)
-mp.add_key_binding("2", "ffmpeg_clip_set_stop", set_stop)
-mp.add_key_binding("LEFT", "ffmpeg_clip_left", codec_left)
-mp.add_key_binding("RIGHT", "ffmpeg_clip_right", codec_right)
-mp.add_key_binding("e", "ffmpeg_clip_export", export_clip)
+mp.add_key_binding("Ctrl+1", "ffmpeg_clip_set_start", set_start)
+mp.add_key_binding("Ctrl+2", "ffmpeg_clip_set_stop", set_stop)
+mp.add_key_binding("Ctrl+LEFT", "ffmpeg_clip_left", codec_left)
+mp.add_key_binding("Ctrl+RIGHT", "ffmpeg_clip_right", codec_right)
+mp.add_key_binding("Ctrl+e", "ffmpeg_clip_export", export_clip)
 
 mp.register_event("file-loaded", function() if state.active then osd() end end)
-mp.add_timeout(0.5, function() mp.osd_message("ffmpeg-clip loaded — press Shift+C to enter mode") end)
+-- Do not show a startup OSD tip; the tips are off by default and can be toggled with Shift+C
 
 -- End
