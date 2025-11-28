@@ -32,8 +32,8 @@ local function osd()
     table.insert(lines, string.format("编码: %s", codec))
     table.insert(lines, string.format("开始: %s (按 Ctrl+1 设置)", s))
     table.insert(lines, string.format("结束: %s (按 Ctrl+2 设置)", e))
-    table.insert(lines, "按 Ctrl+E 导出（仅在本模式生效）")
-    table.insert(lines, "再次按 Shift+C 退出（恢复默认快捷键）")
+    table.insert(lines, "按 Ctrl+O 导出（仅在本模式生效）")
+    table.insert(lines, "再次按 Ctrl+C 退出（恢复默认快捷键）")
     local msg = table.concat(lines, "\n")
     -- convert to ASS (\N for newline) and place at top-left (alignment 7)
     local msg = "\\N\\N\\N" .. table.concat(lines, "\n")
@@ -54,7 +54,7 @@ local function toggle_mode()
     if not state.active then
         stop_osd_timer()
         mp.set_osd_ass(0, 0, "")   -- ⭐立刻清除 OSD
-        mp.osd_message("ffmpeg-clip: 已退出（按 Shift+C 进入）", 3)
+        mp.osd_message("ffmpeg-clip: 已退出（按 Ctrl+C 进入）", 3)
     else
         state.start = nil
         state.stop = nil
@@ -96,6 +96,15 @@ local function codec_right()
     if not state.active then return end
     state.codec_index = state.codec_index + 1
     if state.codec_index > #codec_options then state.codec_index = 1 end
+    osd()
+end
+
+local function codec_cycle()
+    if not state.active then return end
+    state.codec_index = state.codec_index + 1
+    if state.codec_index > #codec_options then
+        state.codec_index = 1
+    end
     osd()
 end
 
@@ -274,15 +283,14 @@ local function export_clip()
     end)
 end
 
--- key bindings: Shift+C to toggle the mode (tips off by default)
-mp.add_key_binding("C", "ffmpeg_clip_toggle", toggle_mode)
+-- key bindings: Ctrl+C to toggle the mode (tips off by default)
+mp.add_key_binding("Ctrl+c", "ffmpeg_clip_toggle", toggle_mode)
 mp.add_key_binding("Ctrl+1", "ffmpeg_clip_set_start", set_start)
 mp.add_key_binding("Ctrl+2", "ffmpeg_clip_set_stop", set_stop)
-mp.add_key_binding("Ctrl+LEFT", "ffmpeg_clip_left", codec_left)
-mp.add_key_binding("Ctrl+RIGHT", "ffmpeg_clip_right", codec_right)
-mp.add_key_binding("Ctrl+e", "ffmpeg_clip_export", export_clip)
+mp.add_key_binding("Ctrl+e", "ffmpeg_clip_cycle_codec", codec_cycle)
+mp.add_key_binding("Ctrl+o", "ffmpeg_clip_export", export_clip)
 
 mp.register_event("file-loaded", function() if state.active then osd() end end)
--- Do not show a startup OSD tip; the tips are off by default and can be toggled with Shift+C
+-- Do not show a startup OSD tip; the tips are off by default and can be toggled with C t r l+C
 
 -- End
